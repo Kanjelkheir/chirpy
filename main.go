@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
@@ -37,6 +39,99 @@ func (cfg *apiConfig) metrics(mux *http.ServeMux) {
 	})
 }
 
+func Handler_validate_chirp() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		type bodyType struct {
+			Body string `json:"body"`
+		}
+
+		body := bodyType{}
+
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&body); err != nil {
+			w.WriteHeader(500)
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Something went wrong",
+			}
+			response, err := json.Marshal(error)
+			if err != nil {
+				log.Printf("error marshaling json: %s", err)
+				w.WriteHeader(500)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(response)
+		}
+
+		if len(body.Body) > 140 {
+			w.WriteHeader(400)
+			w.Header().Set("Content-Type", "application/json")
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Chirp is too long",
+			}
+			data, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				log.Printf("Error marshaling json: %s", err)
+				return
+			}
+			w.Write(data)
+			return
+		}
+
+		valid := struct {
+			Valid bool `json:"valid"`
+		}{
+			Valid: true,
+		}
+		profanity := make([]string, 3)
+		profanity[0] = "kerfuffle"
+		profanity[1] = "sharbert"
+		profanity[2] = "fornax"
+
+		if strings.Contains(strings.ToLower(body.Body), profanity[0]) || strings.Contains(strings.ToLower(body.Body), profanity[1]) || strings.Contains(strings.ToLower(body.Body), profanity[2]) {
+			for _, prof := range profanity {
+				body.Body = strings.ReplaceAll(body.Body, prof, strings.Repeat("*", len(prof)))
+			}
+
+			w.WriteHeader(200)
+			w.Header().Set("Content-Type", "application/json")
+			jsonData := struct {
+				Cleaned_body string `json:"cleaned_body"`
+			}{
+				Cleaned_body: body.Body,
+			}
+
+			data, err := json.Marshal(jsonData)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.Write(data)
+			return
+		} else {
+
+			data, err := json.Marshal(valid)
+			if err != nil {
+				w.WriteHeader(500)
+				log.Printf("Error marshaling json: %s", err)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+
+			w.Write(data)
+		}
+
+	})
+
+}
+
 func (cfg *apiConfig) reset(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/reset", func(w http.ResponseWriter, r *http.Request) {
 		cfg.fileserverHits.Swap(0)
@@ -52,7 +147,7 @@ func main() {
 	config := apiConfig{
 		fileserverHits: atomic.Int32{},
 	}
-	mux.Handle("/app/", config.middlewareMetricsInc(http.StripPrefix("/app/", fs)))
+	mux.Handle("GET /app/", config.middlewareMetricsInc(http.StripPrefix("/app/", fs)))
 
 	// Serve assets with proper strip prefix
 	assetFS := http.FileServer(http.Dir("./assets"))
@@ -69,6 +164,8 @@ func main() {
 		writer.WriteHeader(200)
 		writer.Write([]byte("OK"))
 	})
+
+	mux.Handle("POST /api/validate_chirp", Handler_validate_chirp())
 
 	config.metrics(mux)
 	config.reset(mux)
