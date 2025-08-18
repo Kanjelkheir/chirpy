@@ -579,7 +579,15 @@ func (cfg *apiConfig) HandlerRevokeRefreshToken() http.Handler {
 
 func (cfg *apiConfig) HandlerGetChirps() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		chirps, err := cfg.queries.GetChirps(context.Background())
+		queryParams := r.URL.Query()
+		var chirps []database.Chirp
+		var err error
+		author_id := queryParams.Get("author_id")
+		if author_id != "" {
+			chirps, err = cfg.queries.GetChirpByAuthor(context.Background(), sql.NullString{String: author_id, Valid: true})
+		} else {
+			chirps, err = cfg.queries.GetChirps(context.Background())
+		}
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Header().Set("Content-Type", "application/json")
@@ -977,7 +985,7 @@ func (cfg *apiConfig) HandlerPolkaWebhook() http.Handler {
 			return
 		}
 
-		err := cfg.queries.UpgradeUser(context.Background(), body.Data.User_id)
+		err = cfg.queries.UpgradeUser(context.Background(), body.Data.User_id)
 		if err != nil {
 			error := struct {
 				Error string `json:"error"`
@@ -1005,6 +1013,7 @@ func main() {
 	godotenv.Load()
 
 	db_url := os.Getenv("DB_URL")
+	polka_key := os.Getenv("POLKA_KEY")
 
 	db, err := sql.Open("postgres", db_url)
 	if err != nil {
