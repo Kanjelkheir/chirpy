@@ -583,10 +583,30 @@ func (cfg *apiConfig) HandlerGetChirps() http.Handler {
 		var chirps []database.Chirp
 		var err error
 		author_id := queryParams.Get("author_id")
+		sorted := queryParams.Get("sort")
+		var sortType string = "asc"
+		if sorted != "" {
+			switch sorted {
+			case "asc":
+				sortType = "asc"
+			case "desc":
+				sortType = "desc"
+			default:
+				sortType = "asc"
+			}
+		}
 		if author_id != "" {
-			chirps, err = cfg.queries.GetChirpByAuthor(context.Background(), sql.NullString{String: author_id, Valid: true})
+			if sortType == "desc" {
+				chirps, err = cfg.queries.GetChirpByAuthorDesc(context.Background(), sql.NullString{String: author_id, Valid: true})
+			} else {
+				chirps, err = cfg.queries.GetChirpByAuthorAsc(context.Background(), sql.NullString{String: author_id, Valid: true})
+			}
 		} else {
-			chirps, err = cfg.queries.GetChirps(context.Background())
+			if sortType == "desc" {
+				chirps, err = cfg.queries.GetChirpsDesc(context.Background())
+			} else {
+				chirps, err = cfg.queries.GetChirpsAsc(context.Background())
+			}
 		}
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
