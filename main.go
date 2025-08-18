@@ -53,8 +53,20 @@ func (cfg *apiConfig) metrics(mux *http.ServeMux) {
 func (cfg *apiConfig) HandlerChirps() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		type bodyType struct {
-			Body    string `json:"body"`
-			User_id string `json:"user_id"`
+			Body string `json:"body"`
+		}
+
+		tokenSecret := os.Getenv("SECRET")
+		token, err := auth.GetBearerToken(&r.Header)
+		if err != nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		userID, err := auth.ValidateJWT(token, tokenSecret)
+		if err != nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
 		}
 
 		body := bodyType{}
@@ -62,33 +74,34 @@ func (cfg *apiConfig) HandlerChirps() http.Handler {
 		decoder := json.NewDecoder(r.Body)
 		if err := decoder.Decode(&body); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			error := struct {
+			errorResponse := struct {
 				Error string `json:"error"`
 			}{
 				Error: "Invalid request body",
 			}
-			response, err := json.Marshal(error)
-			if err != nil {
-				log.Printf("error marshaling json: %s", err)
-				w.WriteHeader(500)
+			response, marshalErr := json.Marshal(errorResponse)
+			if marshalErr != nil {
+				log.Printf("error marshaling json: %s", marshalErr)
+				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(response)
+			return
 		}
 
 		if len(body.Body) > 140 {
-			w.WriteHeader(400)
+			w.WriteHeader(http.StatusBadRequest)
 			w.Header().Set("Content-Type", "application/json")
-			error := struct {
+			errorResponse := struct {
 				Error string `json:"error"`
 			}{
 				Error: "Chirp is too long",
 			}
-			data, err := json.Marshal(error)
-			if err != nil {
-				w.WriteHeader(500)
-				log.Printf("Error marshaling json: %s", err)
+			data, marshalErr := json.Marshal(errorResponse)
+			if marshalErr != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				log.Printf("Error marshaling json: %s", marshalErr)
 				return
 			}
 			w.Write(data)
@@ -110,20 +123,20 @@ func (cfg *apiConfig) HandlerChirps() http.Handler {
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 			Body:      body.Body,
-			UserID:    sql.NullString{String: body.User_id, Valid: true},
+			UserID:    sql.NullString{String: userID.String(), Valid: true},
 		}
 		chirp, err := cfg.queries.CreateChirp(context.Background(), chirpParams)
 		if err != nil {
-			w.WriteHeader(500)
-			error := struct {
+			w.WriteHeader(http.StatusInternalServerError)
+			errorResponse := struct {
 				Error string `json:"error"`
 			}{
 				Error: "Failed to create chirp",
 			}
 
-			response, err := json.Marshal(error)
-			if err != nil {
-				w.WriteHeader(500)
+			response, marshalErr := json.Marshal(errorResponse)
+			if marshalErr != nil {
+				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 
@@ -147,11 +160,11 @@ func (cfg *apiConfig) HandlerChirps() http.Handler {
 
 		response, err := json.Marshal(chirpData)
 		if err != nil {
-			w.WriteHeader(500)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		w.WriteHeader(201)
+		w.WriteHeader(http.StatusCreated)
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(response)
 
@@ -161,16 +174,17 @@ func (cfg *apiConfig) HandlerChirps() http.Handler {
 
 func (cfg *apiConfig) HandlerAddUser() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		type emailStruct struct {
-			Email    string `json:"email"`
-			Password string `json:"password"`
+		type requestBody struct {
+			Email              string `json:"email"`
+			Password           string `json:"password"`
+			Expires_in_seconds int    `json:"expires_in_seconds"`
 		}
 
-		var email emailStruct
+		var reqBody requestBody
 
 		decoder := json.NewDecoder(r.Body)
 		defer r.Body.Close()
-		if err := decoder.Decode(&email); err != nil {
+		if err := decoder.Decode(&reqBody); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			errorResponse := struct {
 				Error string `json:"error"`
@@ -187,11 +201,10 @@ func (cfg *apiConfig) HandlerAddUser() http.Handler {
 			w.Write(jsonResponse)
 			return
 		}
-		defer r.Body.Close()
 
-		hash, err := auth.HashPassword(email.Password)
+		hash, err := auth.HashPassword(reqBody.Password)
 		if err != nil {
-			w.WriteHeader(500)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
@@ -199,39 +212,143 @@ func (cfg *apiConfig) HandlerAddUser() http.Handler {
 			ID:        uuid.New().String(),
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
-			Email:     email.Email,
+			Email:     reqBody.Email,
 			Password:  hash,
 		}
 
 		user, err := cfg.queries.CreateUser(context.Background(), params)
 		if err != nil {
-			w.WriteHeader(500)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		type DataStruct struct {
+		user_uuid, err := uuid.Parse(user.ID)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		tokenSecret := os.Getenv("SECRET")
+		token, err := auth.MakeJWT(user_uuid, tokenSecret, time.Duration(reqBody.Expires_in_seconds)*time.Second)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		type responseBody struct {
 			Id         string `json:"id"`
 			Created_at string `json:"created_at"`
 			Updated_at string `json:"updated_at"`
 			Email      string `json:"email"`
+			Token      string `json:"token"`
 		}
 
-		data := DataStruct{
+		resp := responseBody{
 			Id:         user.ID,
 			Created_at: user.CreatedAt.String(),
 			Updated_at: user.CreatedAt.String(),
 			Email:      user.Email,
+			Token:      token,
 		}
 
-		response, err := json.Marshal(data)
+		jsonResponse, err := json.Marshal(resp)
 		if err != nil {
-			w.WriteHeader(500)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(200)
-		w.Write(response)
+		w.WriteHeader(http.StatusCreated) // Use 201 Created for successful resource creation
+		w.Write(jsonResponse)
+	})
+}
+
+func (cfg *apiConfig) HandlerLoginUser() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		type requestBody struct {
+			Email              string `json:"email"`
+			Password           string `json:"password"`
+			Expires_in_seconds int    `json:"expires_in_seconds"`
+		}
+
+		var reqBody requestBody
+		decoder := json.NewDecoder(r.Body)
+		defer r.Body.Close()
+
+		if err := decoder.Decode(&reqBody); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			jsonResponse, _ := json.Marshal(map[string]string{"error": "Invalid request body"})
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(jsonResponse)
+			return
+		}
+
+		user, err := cfg.queries.GetUserByEmail(context.Background(), reqBody.Email)
+		if err != nil {
+			w.WriteHeader(http.StatusUnauthorized) // 401 for bad credentials
+			jsonResponse, _ := json.Marshal(map[string]string{"error": "Invalid credentials"})
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(jsonResponse)
+			return
+		}
+
+		err = auth.CheckPasswordHash(reqBody.Password, user.Password)
+		if err != nil {
+			w.WriteHeader(http.StatusUnauthorized) // 401 for bad credentials
+			jsonResponse, _ := json.Marshal(map[string]string{"error": "Invalid credentials"})
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(jsonResponse)
+			return
+		}
+
+		userUUID, err := uuid.Parse(user.ID)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			log.Printf("Error parsing user UUID: %v", err)
+			return
+		}
+
+		tokenSecret := os.Getenv("SECRET")
+		if tokenSecret == "" {
+			w.WriteHeader(http.StatusInternalServerError)
+			log.Println("JWT secret not set in environment")
+			return
+		}
+		// Use the expires_in_seconds from the request, default to 1 hour if not provided or invalid
+		expiresIn := time.Duration(reqBody.Expires_in_seconds) * time.Second
+		if reqBody.Expires_in_seconds <= 0 { // Check the raw int value for default
+			expiresIn = time.Hour // Default to 1 hour
+		}
+
+		token, err := auth.MakeJWT(userUUID, tokenSecret, expiresIn)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			log.Printf("Error making JWT: %v", err)
+			return
+		}
+
+		type responseBody struct {
+			Id    string `json:"id"`
+			Email string `json:"email"`
+			Token string `json:"token"`
+		}
+
+		resp := responseBody{
+			Id:    user.ID,
+			Email: user.Email,
+			Token: token,
+		}
+
+		jsonResponse, err := json.Marshal(resp)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			log.Printf("Error marshaling login response: %v", err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK) // 200 OK for successful login
+		w.Write(jsonResponse)
 	})
 }
 
@@ -398,7 +515,8 @@ func main() {
 	})
 
 	mux.Handle("POST /api/validate_chirp", config.HandlerChirps())
-	mux.Handle("POST /api/users", config.HandlerAddUser())
+	mux.Handle("POST /api/users", config.HandlerAddUser()) // Existing user creation endpoint
+	mux.Handle("POST /api/login", config.HandlerLoginUser())
 	mux.Handle("POST /api/chirps", config.HandlerChirps())
 	mux.Handle("GET /api/chirps", config.HandlerGetChirps())
 	mux.Handle("GET /api/chirps/{chirp_id}", config.HandlerChirpsFilter())
