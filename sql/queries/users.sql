@@ -1,10 +1,11 @@
 -- name: CreateUser :one
-insert into users (id, created_at, updated_at, email, password) values(
+insert into users (id, created_at, updated_at, email, password, expires_in_seconds) values(
     $1,
     $2,
     $3,
     $4,
-    $5
+    $5,
+    $6
 ) returning *;
 
 -- name: DeleteUser :exec
