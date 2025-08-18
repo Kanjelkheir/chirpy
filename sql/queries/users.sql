@@ -14,5 +14,10 @@ delete from users where email = $1;
 select * from users where email = $1;
 
 -- name: UpdateUser :one
-with (select * from refresh_tokens where token = $1) as token_response
-select * from users where id = token_response.user_id;
+update users
+set email = $2, password = $3, updated_at = $4
+where id = (
+    select user_id from refresh_tokens
+    where token = $1 and revoked_at is null and expires_at > now()
+)
+returning *;
