@@ -17,3 +17,6 @@ select * from chirps where id = $1;
 
 -- name: DeleteChirp :exec
 delete from chirps where user_id = $1;
+
+-- name: GetChirpByAuthor :many
+select * from chirps where user_id = $1;
