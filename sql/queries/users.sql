@@ -21,3 +21,6 @@ where id = (
     where token = $1 and revoked_at is null and expires_at > now()
 )
 returning *;
+
+-- name: UpgradeUser :one
+update users set is_chirpy_red = true where id = $1;
