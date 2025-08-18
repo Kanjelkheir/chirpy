@@ -266,9 +266,8 @@ func (cfg *apiConfig) HandlerAddUser() http.Handler {
 func (cfg *apiConfig) HandlerLoginUser() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		type requestBody struct {
-			Email              string `json:"email"`
-			Password           string `json:"password"`
-			Expires_in_seconds int    `json:"expires_in_seconds"`
+			Email    string `json:"email"`
+			Password string `json:"password"`
 		}
 
 		var reqBody requestBody
@@ -315,10 +314,7 @@ func (cfg *apiConfig) HandlerLoginUser() http.Handler {
 			return
 		}
 		// Use the expires_in_seconds from the request, default to 1 hour if not provided or invalid
-		expiresIn := time.Duration(reqBody.Expires_in_seconds) * time.Second
-		if reqBody.Expires_in_seconds <= 0 { // Check the raw int value for default
-			expiresIn = time.Hour // Default to 1 hour
-		}
+		expiresIn := time.Hour
 
 		token, err := auth.MakeJWT(userUUID, tokenSecret, expiresIn)
 		if err != nil {
@@ -327,22 +323,72 @@ func (cfg *apiConfig) HandlerLoginUser() http.Handler {
 			return
 		}
 
+		refresh_token, err := auth.MakeRefreshTokens()
+		if err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Failed to create refresh token",
+			}
+
+			errorResponse, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(http.StatusInternalServerError)
+
+			w.Header().Set("Content-Type", "application/json")
+
+			w.Write(errorResponse)
+		}
+
 		type responseBody struct {
-			Id    string `json:"id"`
-			Email string `json:"email"`
-			Token string `json:"token"`
+			Id            string `json:"id"`
+			Email         string `json:"email"`
+			Token         string `json:"token"`
+			Refresh_token string `json:"refresh_token"`
 		}
 
 		resp := responseBody{
-			Id:    user.ID,
-			Email: user.Email,
-			Token: token,
+			Id:            user.ID,
+			Email:         user.Email,
+			Token:         token,
+			Refresh_token: refresh_token,
 		}
 
 		jsonResponse, err := json.Marshal(resp)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			log.Printf("Error marshaling login response: %v", err)
+			return
+		}
+
+		refresh_token_params := database.CreateRefreshTokenParams{
+			Token:     resp.Refresh_token,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+			UserID:    sql.NullString{String: resp.Id, Valid: true},
+			ExpiresAt: sql.NullTime{Time: time.Now().Add(60 * 24 * time.Hour), Valid: true},
+		}
+		_, err = cfg.queries.CreateRefreshToken(context.Background(), refresh_token_params)
+		if err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Failed to create refresh token",
+			}
+
+			responseError, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(responseError)
 			return
 		}
 
@@ -385,6 +431,144 @@ func (cfg *apiConfig) reset(mux *http.ServeMux) {
 
 		cfg.fileserverHits.Swap(0)
 		w.WriteHeader(200)
+	})
+}
+
+func (cfg *apiConfig) HandlerRefresh() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		godotenv.Load()
+		token, err := auth.GetBearerToken(&r.Header)
+		if err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Invalid authorization header",
+			}
+
+			errorResponse, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(200)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(errorResponse)
+			return
+		}
+
+		user_refresh_token, err := cfg.queries.GetRefreshToken(context.Background(), token)
+		if err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Invalid refresh token",
+			}
+
+			errorResponse, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(401)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(errorResponse)
+			return
+		}
+
+		token_secret := os.Getenv("SECRET")
+
+		user_uuid, err := uuid.Parse(user_refresh_token.UserID.String)
+		if err != nil {
+			w.WriteHeader(500)
+			return
+		}
+
+		jwt, err := auth.MakeJWT(user_uuid, token_secret, time.Hour)
+		if err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Failed to create token",
+			}
+
+			responseError, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(500)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(responseError)
+		}
+
+		tokenStructure := struct {
+			Token string `json:"token"`
+		}{
+			Token: jwt,
+		}
+
+		response, err := json.Marshal(tokenStructure)
+		if err != nil {
+			w.WriteHeader(500)
+			return
+		}
+
+		w.WriteHeader(200)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(response)
+	})
+}
+
+func (cfg *apiConfig) HandlerRevokeRefreshToken() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		refresh_token, err := auth.GetBearerToken(&r.Header)
+		if err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Invalid authorization header",
+			}
+
+			response, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(400)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(response)
+			return
+		}
+
+		params := database.RevokeRefreshTokenParams{
+			RevokedAt: sql.NullTime{Time: time.Now(), Valid: true},
+			UpdatedAt: time.Now(),
+			Token:     refresh_token,
+		}
+		err = cfg.queries.RevokeRefreshToken(context.Background(), params)
+		if err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Failed to revoke Refresh token",
+			}
+
+			response, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(500)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(response)
+		}
+
+		w.WriteHeader(204)
 	})
 }
 
@@ -475,6 +659,78 @@ func (cfg *apiConfig) HandlerChirpsFilter() http.Handler {
 	})
 }
 
+func (cfg *apiConfig) Updateuser() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		type HeaderParams struct {
+			Password string `json:"password"`
+			Email    string `json:"email"`
+		}
+
+		var creds HeaderParams
+
+		decoder := json.NewDecoder(r.Body)
+
+		if err := decoder.Decode(&creds); err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Invalid request body",
+			}
+
+			errorResponse, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(http.StatusBadRequest)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(errorResponse)
+		}
+
+		refresh_token, err := auth.GetBearerToken(&r.Header)
+		if err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Invalid authentication header",
+			}
+
+			errorResponse, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(400)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(errorResponse)
+		}
+
+		token, err := cfg.queries.GetRefreshToken(context.Background(), refresh_token)
+		if err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Invalid refresh token",
+			}
+
+			errorResponse, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(400)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(errorResponse)
+		}
+		
+		
+
+	})
+}
+
 func main() {
 	godotenv.Load()
 
@@ -520,6 +776,8 @@ func main() {
 	mux.Handle("POST /api/chirps", config.HandlerChirps())
 	mux.Handle("GET /api/chirps", config.HandlerGetChirps())
 	mux.Handle("GET /api/chirps/{chirp_id}", config.HandlerChirpsFilter())
+	mux.Handle("POST /api/refresh", config.HandlerRefresh())
+	mux.Handle("POST /api/revoke", config.HandlerRevokeRefreshToken())
 
 	config.metrics(mux)
 	config.reset(mux)
