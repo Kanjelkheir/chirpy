@@ -659,7 +659,7 @@ func (cfg *apiConfig) HandlerChirpsFilter() http.Handler {
 	})
 }
 
-func (cfg *apiConfig) Updateuser() http.Handler {
+func (cfg *apiConfig) HandlerUpdateUser() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		type HeaderParams struct {
 			Password string `json:"password"`
@@ -683,9 +683,10 @@ func (cfg *apiConfig) Updateuser() http.Handler {
 				return
 			}
 
-			w.WriteHeader(http.StatusBadRequest)
+			w.WriteHeader(401)
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(errorResponse)
+			return
 		}
 
 		refresh_token, err := auth.GetBearerToken(&r.Header)
@@ -705,6 +706,7 @@ func (cfg *apiConfig) Updateuser() http.Handler {
 			w.WriteHeader(400)
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(errorResponse)
+			return
 		}
 
 		token, err := cfg.queries.GetRefreshToken(context.Background(), refresh_token)
@@ -724,10 +726,185 @@ func (cfg *apiConfig) Updateuser() http.Handler {
 			w.WriteHeader(400)
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(errorResponse)
+			return
 		}
-		
-		
 
+		hashed_password, err := auth.HashPassword(creds.Password)
+		if err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Failed to update user",
+			}
+
+			errorResponse, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(500)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(errorResponse)
+			return
+		}
+		updateUserParams := database.UpdateUserParams{
+			Token:     token.Token,
+			Email:     creds.Email,
+			Password:  hashed_password,
+			UpdatedAt: time.Now(),
+		}
+		user, err := cfg.queries.UpdateUser(context.Background(), updateUserParams)
+		if err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Failed to update user",
+			}
+
+			errorResponse, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(500)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(errorResponse)
+			return
+		}
+
+		type userData struct {
+			Id         string `json:"id"`
+			Email      string `json:"Id"`
+			Created_at string `json:"created_at"`
+			Updated_at string `json:"updated_at"`
+		}
+
+		responseData := userData{
+			Id:         user.ID,
+			Email:      user.Email,
+			Created_at: user.CreatedAt.String(),
+			Updated_at: user.UpdatedAt.String(),
+		}
+
+		response, err := json.Marshal(responseData)
+		if err != nil {
+			w.WriteHeader(500)
+			return
+		}
+
+		w.WriteHeader(200)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(response)
+	})
+}
+
+func (cfg *apiConfig) HandlerDeleteChirp() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chirpId := r.PathValue("chirpID")
+		token, err := auth.GetBearerToken(&r.Header)
+		if err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Invalid authorization header",
+			}
+
+			errorResponse, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(400)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(errorResponse)
+			return
+		}
+
+		godotenv.Load()
+		tokenSecret := os.Getenv("SECRET")
+		user_uuid, err := auth.ValidateJWT(token, tokenSecret)
+		if err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Invalid jwt token",
+			}
+
+			errorResponse, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(400)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(errorResponse)
+			return
+		}
+
+		chirp, err := cfg.queries.GetChirp(context.Background(), chirpId)
+		if err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Chirp not found",
+			}
+
+			errorResponse, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(404)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(errorResponse)
+			return
+		}
+
+		if chirp.UserID.String != user_uuid.String() {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Not allowed",
+			}
+
+			errorResponse, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(403)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(errorResponse)
+			return
+		}
+
+		err = cfg.queries.DeleteChirp(context.Background(), sql.NullString{String: user_uuid.String(), Valid: true})
+		if err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Failed to delete chirp",
+			}
+
+			errorResponse, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(500)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(errorResponse)
+			return
+		}
+
+		w.WriteHeader(204)
 	})
 }
 
@@ -778,6 +955,8 @@ func main() {
 	mux.Handle("GET /api/chirps/{chirp_id}", config.HandlerChirpsFilter())
 	mux.Handle("POST /api/refresh", config.HandlerRefresh())
 	mux.Handle("POST /api/revoke", config.HandlerRevokeRefreshToken())
+	mux.Handle("PUT /api/users", config.HandlerUpdateUser())
+	mux.Handle("DELETE /api/chirps/{chirpID}", config.HandlerDeleteChirp())
 
 	config.metrics(mux)
 	config.reset(mux)
