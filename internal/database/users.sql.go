@@ -17,7 +17,7 @@ insert into users (id, created_at, updated_at, email, password) values(
     $3,
     $4,
     $5
-) returning id, created_at, updated_at, email, password
+) returning id, created_at, updated_at, email, password, is_chirpy_red
 `
 
 type CreateUserParams struct {
@@ -43,6 +43,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.UpdatedAt,
 		&i.Email,
 		&i.Password,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
@@ -57,7 +58,7 @@ func (q *Queries) DeleteUser(ctx context.Context, email string) error {
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-select id, created_at, updated_at, email, password from users where email = $1
+select id, created_at, updated_at, email, password, is_chirpy_red from users where email = $1
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
@@ -69,6 +70,7 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.UpdatedAt,
 		&i.Email,
 		&i.Password,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
@@ -80,7 +82,7 @@ where id = (
     select user_id from refresh_tokens
     where token = $1 and revoked_at is null and expires_at > now()
 )
-returning id, created_at, updated_at, email, password
+returning id, created_at, updated_at, email, password, is_chirpy_red
 `
 
 type UpdateUserParams struct {
@@ -104,6 +106,16 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, e
 		&i.UpdatedAt,
 		&i.Email,
 		&i.Password,
+		&i.IsChirpyRed,
 	)
 	return i, err
+}
+
+const upgradeUser = `-- name: UpgradeUser :exec
+update users set is_chirpy_red = true where id = $1
+`
+
+func (q *Queries) UpgradeUser(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, upgradeUser, id)
+	return err
 }

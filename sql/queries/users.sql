@@ -22,5 +22,5 @@ where id = (
 )
 returning *;
 
--- name: UpgradeUser :one
-update users set is_chirpy_red = true where id = $1 returning *;
+-- name: UpgradeUser :exec
+update users set is_chirpy_red = true where id = $1;

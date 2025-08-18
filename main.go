@@ -908,6 +908,65 @@ func (cfg *apiConfig) HandlerDeleteChirp() http.Handler {
 	})
 }
 
+func (cfg *apiConfig) HandlerPolkaWebhook() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		type data struct {
+			User_id string `json:"user_id"`
+		}
+		type requestStruct struct {
+			Event string `json:"event"`
+			Data  data   `json:"data"`
+		}
+
+		var body requestStruct
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&body); err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Invalid request body",
+			}
+
+			errorResponse, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(400)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(errorResponse)
+			return
+		}
+
+		if body.Event != "user.upgraded" {
+			w.WriteHeader(204)
+			return
+		}
+
+		err := cfg.queries.UpgradeUser(context.Background(), body.Data.User_id)
+		if err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: "Error upgrading user",
+			}
+
+			errorResponse, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(400)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(errorResponse)
+			return
+		}
+
+	})
+}
+
 func main() {
 	godotenv.Load()
 
