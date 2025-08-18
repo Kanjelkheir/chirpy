@@ -22,6 +22,7 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	queries        *database.Queries
+	polka_key      string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -236,19 +237,21 @@ func (cfg *apiConfig) HandlerAddUser() http.Handler {
 		}
 
 		type responseBody struct {
-			Id         string `json:"id"`
-			Created_at string `json:"created_at"`
-			Updated_at string `json:"updated_at"`
-			Email      string `json:"email"`
-			Token      string `json:"token"`
+			Id            string `json:"id"`
+			Created_at    string `json:"created_at"`
+			Updated_at    string `json:"updated_at"`
+			Email         string `json:"email"`
+			Token         string `json:"token"`
+			Is_chirpy_red bool   `json:"is_chirpy_red"`
 		}
 
 		resp := responseBody{
-			Id:         user.ID,
-			Created_at: user.CreatedAt.String(),
-			Updated_at: user.CreatedAt.String(),
-			Email:      user.Email,
-			Token:      token,
+			Id:            user.ID,
+			Created_at:    user.CreatedAt.String(),
+			Updated_at:    user.CreatedAt.String(),
+			Email:         user.Email,
+			Token:         token,
+			Is_chirpy_red: user.IsChirpyRed.Bool,
 		}
 
 		jsonResponse, err := json.Marshal(resp)
@@ -349,6 +352,7 @@ func (cfg *apiConfig) HandlerLoginUser() http.Handler {
 			Email         string `json:"email"`
 			Token         string `json:"token"`
 			Refresh_token string `json:"refresh_token"`
+			Is_chirpy_red bool   `json:"is_chirpy_red"`
 		}
 
 		resp := responseBody{
@@ -356,6 +360,7 @@ func (cfg *apiConfig) HandlerLoginUser() http.Handler {
 			Email:         user.Email,
 			Token:         token,
 			Refresh_token: refresh_token,
+			Is_chirpy_red: user.IsChirpyRed.Bool,
 		}
 
 		jsonResponse, err := json.Marshal(resp)
@@ -775,17 +780,19 @@ func (cfg *apiConfig) HandlerUpdateUser() http.Handler {
 		}
 
 		type userData struct {
-			Id         string `json:"id"`
-			Email      string `json:"Id"`
-			Created_at string `json:"created_at"`
-			Updated_at string `json:"updated_at"`
+			Id            string `json:"id"`
+			Email         string `json:"email"`
+			Created_at    string `json:"created_at"`
+			Updated_at    string `json:"updated_at"`
+			Is_chirpy_red bool   `json:"is_chirpy_red"`
 		}
 
 		responseData := userData{
-			Id:         user.ID,
-			Email:      user.Email,
-			Created_at: user.CreatedAt.String(),
-			Updated_at: user.UpdatedAt.String(),
+			Id:            user.ID,
+			Email:         user.Email,
+			Created_at:    user.CreatedAt.String(),
+			Updated_at:    user.UpdatedAt.String(),
+			Is_chirpy_red: user.IsChirpyRed.Bool,
 		}
 
 		response, err := json.Marshal(responseData)
@@ -910,6 +917,32 @@ func (cfg *apiConfig) HandlerDeleteChirp() http.Handler {
 
 func (cfg *apiConfig) HandlerPolkaWebhook() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		godotenv.Load()
+		valid_api_key := os.Getenv("POLKA_KEY")
+		api_key, err := auth.GetAPIKey(&r.Header)
+		if err != nil {
+			error := struct {
+				Error string `json:"error"`
+			}{
+				Error: fmt.Sprintf("Invalid api key: %v", err),
+			}
+
+			errorResponse, err := json.Marshal(error)
+			if err != nil {
+				w.WriteHeader(500)
+				return
+			}
+
+			w.WriteHeader(400)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(errorResponse)
+		}
+
+		if api_key != valid_api_key {
+			w.WriteHeader(401)
+			return
+		}
+
 		type data struct {
 			User_id string `json:"user_id"`
 		}
@@ -964,6 +997,7 @@ func (cfg *apiConfig) HandlerPolkaWebhook() http.Handler {
 			return
 		}
 
+		w.WriteHeader(204)
 	})
 }
 
@@ -987,6 +1021,7 @@ func main() {
 	config := apiConfig{
 		fileserverHits: atomic.Int32{},
 		queries:        dbQueries,
+		polka_key:      polka_key,
 	}
 	mux.Handle("GET /app/", config.middlewareMetricsInc(http.StripPrefix("/app/", fs)))
 
@@ -1016,6 +1051,7 @@ func main() {
 	mux.Handle("POST /api/revoke", config.HandlerRevokeRefreshToken())
 	mux.Handle("PUT /api/users", config.HandlerUpdateUser())
 	mux.Handle("DELETE /api/chirps/{chirpID}", config.HandlerDeleteChirp())
+	mux.Handle("POST /api/polka/webhooks", config.HandlerPolkaWebhook())
 
 	config.metrics(mux)
 	config.reset(mux)
